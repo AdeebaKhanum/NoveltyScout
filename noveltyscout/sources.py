@@ -87,7 +87,7 @@ def search_arxiv(query: str, max_results: int = config.RESULTS_PER_SOURCE) -> li
                 "https://export.arxiv.org/api/query",
                 params={"search_query": q, "start": 0, "max_results": max_results,
                         "sortBy": "relevance"},
-                timeout=config.HTTP_TIMEOUT,
+                timeout=(3, config.HTTP_TIMEOUT),
             )
             resp.raise_for_status()
             return parse_arxiv_xml(resp.text)
@@ -126,7 +126,7 @@ def search_openalex(query: str, max_results: int = config.RESULTS_PER_SOURCE) ->
         params["mailto"] = config.OPENALEX_EMAIL
     try:
         resp = requests.get("https://api.openalex.org/works", params=params,
-                            timeout=config.HTTP_TIMEOUT)
+                            timeout=(3, config.HTTP_TIMEOUT))
         resp.raise_for_status()
         return parse_openalex_json(resp.json())
     except (requests.RequestException, ValueError) as exc:

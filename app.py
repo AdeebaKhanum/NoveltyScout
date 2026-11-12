@@ -141,6 +141,10 @@ with st.sidebar:
                f"uploaded {counts.get('upload', 0)}")
     if st.button("Forget live results", width="stretch"):
         store.delete_origin("live")
+        mem.evidence = {key: value for key, value in mem.evidence.items()
+                        if value.get("origin") != "live"}
+        mem.comparisons, mem.gaps, mem.report_md = [], {}, ""
+        mem.score, mem.flags = 0.0, {}
         st.rerun()
     if st.button("New session", width="stretch"):
         st.session_state.memory = SessionMemory()
@@ -165,8 +169,8 @@ mem = st.session_state.memory
 # ------------------------------------------------------------------------------ header
 st.markdown(
     '<div class="hero"><h1>🔎 NoveltyScout</h1>'
-    '<p>Describe your invention. A team of AI agents searches prior art, compares it feature by feature, '
-    'and tells you what already exists and what looks new.</p>'
+    '<p>Describe your invention. A team of AI agents searches available evidence, compares it feature by feature, '
+    'and highlights matching material and potential evidence gaps.</p>'
     '<span class="tag">Agentic RAG</span><span class="tag">LangChain LCEL</span>'
     '<span class="tag">ChromaDB</span><span class="tag">ReAct + Reflection</span></div>',
     unsafe_allow_html=True)
@@ -176,7 +180,7 @@ m1, m2, m3, m4 = st.columns(4)
 m1.markdown(card("Documents in vector DB", store.count(), "searchable by meaning"), unsafe_allow_html=True)
 m2.markdown(card("Features checked", len(mem.features), "from your idea"), unsafe_allow_html=True)
 m3.markdown(card("Evidence found", len(mem.evidence), "references retrieved"), unsafe_allow_html=True)
-m4.markdown(card("Overlap index", f"{mem.score:.0f}/100" if mem.comparisons else "-",
+m4.markdown(card("Evidence overlap", f"{mem.score:.0f}/100" if mem.comparisons else "-",
                  scoring.overlap_band(mem.score).split(" - ")[0] if mem.comparisons else "run a comparison"),
             unsafe_allow_html=True)
 st.write("")
@@ -246,7 +250,7 @@ with tab_evidence:
 
     st.divider()
     st.subheader("Add your own evidence")
-    st.caption("Copy a patent abstract/claims from Google Patents, Espacenet or the Indian patent portal, or upload "
+    st.caption("Live search currently covers scholarly papers, not patent databases. Copy a patent abstract/claims from Google Patents, Espacenet or the Indian patent portal, or upload "
                "a PDF/TXT. It is split into chunks, embedded and stored in ChromaDB.")
     u_title = st.text_input("Title / patent number")
     u_kind = st.selectbox("Type", ["patent", "paper"])
@@ -254,16 +258,22 @@ with tab_evidence:
     u_file = st.file_uploader("...or upload a file", type=["txt", "pdf"])
     if st.button("Add to vector database", type="primary"):
         text = u_text
-        if u_file is not None:
-            text = (sources.text_from_pdf(u_file) if u_file.name.lower().endswith(".pdf")
-                    else u_file.read().decode("utf-8", errors="ignore"))
-        if not text.strip():
-            st.warning("Paste some text or upload a file first.")
-        else:
-            docs = sources.docs_from_text(u_title or (u_file.name if u_file else ""), text, u_kind)
-            n = store.add_documents(docs)
-            st.success(f"Stored {n} chunk(s). Ask for the comparison again to use them.")
-            mem.comparisons, mem.gaps, mem.report_md = [], {}, ""
+        try:
+            if u_file is not None:
+                text = (sources.text_from_pdf(u_file) if u_file.name.lower().endswith(".pdf")
+                        else u_file.read().decode("utf-8", errors="ignore"))
+            if not text.strip():
+                st.warning("No selectable text was found. If this is a scanned PDF, run OCR first or paste the abstract/claims manually.")
+            else:
+                docs = sources.docs_from_text(u_title or (u_file.name if u_file else ""), text, u_kind)
+                n = store.add_documents(docs)
+                if n:
+                    st.success(f"Stored {n} chunk(s). Ask for the comparison again to use them.")
+                    mem.comparisons, mem.gaps, mem.report_md = [], {}, ""
+                else:
+                    st.warning("No evidence chunks were created. Please check the supplied text.")
+        except Exception as exc:  # noqa: BLE001 - display upload/parser errors in the UI
+            st.error(f"Could not add this evidence: {exc}")
 
 # -------------------------------------------------------------------------- analysis
 with tab_analysis:
@@ -271,14 +281,14 @@ with tab_analysis:
         score = mem.score
         color = "#34d399" if score < 25 else ("#f5b942" if score < 55 else "#f87171")
         st.markdown(
-            f'<div class="card"><div class="lbl">Overlap with prior art</div>'
+            f'<div class="card"><div class="lbl">Evidence-overlap indicator (heuristic)</div>'
             f'<div class="val">{score:.0f} / 100 &nbsp;<span style="font-size:1rem;color:{color}">'
             f'{html.escape(scoring.overlap_band(score))}</span></div>'
             f'<div class="bar"><div style="width:{max(2, min(100, score)):.0f}%;background:{color}"></div></div>'
             f'<div class="sub">Closest reference: {html.escape(str(mem.flags.get("closest_reference") or "none"))} '
             f'(covers {html.escape(str(mem.flags.get("closest_coverage", "0/0")))} features) · '
-            f'Anticipation risk: {"YES" if mem.flags.get("anticipation_risk") else "no"} · '
-            f'Obviousness risk: {"YES" if mem.flags.get("obviousness_risk") else "no"}</div></div>',
+            f'Single-reference coverage signal: {"YES" if mem.flags.get("anticipation_risk") else "no"} · '
+            f'Multi-reference combination review: {"YES" if mem.flags.get("combination_review") else "no"}</div></div>',
             unsafe_allow_html=True)
         st.markdown(f'<div class="note">{html.escape(mem.flags.get("note", ""))}</div>', unsafe_allow_html=True)
 
@@ -292,11 +302,11 @@ with tab_analysis:
                 f"<td>{html.escape(c.get('reasoning', ''))}</td></tr>")
         rows.append("</table>")
         st.markdown("".join(rows), unsafe_allow_html=True)
-        st.caption("Red = already disclosed (bad for novelty) · amber = partly known · green = not found in evidence")
+        st.caption("Red = a retrieved excerpt was judged to disclose the feature · amber = partial match · green = no clear match was found in the retrieved evidence set")
 
         g1, g2 = st.columns(2)
         with g1:
-            st.markdown("#### ✅ Possibly novel")
+            st.markdown("#### 🔎 Potential evidence gaps")
             for g in mem.gaps.get("novel_aspects", []) or []:
                 st.markdown(f"- **{g.get('aspect', '')}** - {g.get('why', '')} _(risk: {g.get('risk', 'n/a')})_")
         with g2:
@@ -331,7 +341,7 @@ with tab_how:
         '<div class="box"><h4>3. Compare</h4><p>For each feature the closest documents are fetched by similarity '
         'search. The <b>novelty agent</b> labels each feature disclosed, partial or not found. Weak evidence '
         'triggers a targeted extra search (Agentic RAG).</p></div>'
-        '<div class="box"><h4>4. Judge and report</h4><p>Python code computes the overlap score and flags. '
+        '<div class="box"><h4>4. Judge and report</h4><p>Python code computes a heuristic evidence-overlap indicator and review signals. '
         'The <b>gap agent</b> drafts what looks new and then criticises its own draft (Reflection). '
         'The <b>report agent</b> writes the cited note.</p></div></div>',
         unsafe_allow_html=True)

@@ -22,8 +22,8 @@ def get_llm(provider: str | None = None, model: str | None = None,
         # Gemini 3.x: Google's migration guide says to NOT send temperature/top_p/top_k,
         # so only the model name and retries are set here.
         primary_name = model or config.GEMINI_MODEL
-        primary = ChatGoogleGenerativeAI(model=primary_name, max_retries=2)
-        backups = [ChatGoogleGenerativeAI(model=name, max_retries=1)
+        primary = ChatGoogleGenerativeAI(model=primary_name, max_retries=0, timeout=25)
+        backups = [ChatGoogleGenerativeAI(model=name, max_retries=0, timeout=25)
                    for name in config.GEMINI_FALLBACKS if name != primary_name]
         # LangChain fallbacks: if the primary model errors (e.g. 503 overload), try the next one.
         return primary.with_fallbacks(backups) if backups else primary

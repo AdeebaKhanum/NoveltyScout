@@ -1,101 +1,149 @@
-"""Deterministic scoring (plain Python, NO LLM).
+"""Deterministic, explainable screening metrics (not a legal patentability test).
 
-Why not let the LLM compute the score?  LLMs are unreliable at arithmetic and give different
-numbers on each run.  The LLM only supplies per-feature VERDICTS; the numbers and risk flags
-below are computed by code, so they are reproducible and explainable in a viva.
-
-Patent logic mirrored here
-  * Novelty (anticipation): ONE earlier document discloses ALL elements of the invention.
-  * Inventive step (obviousness): the elements are all known but spread across several documents,
-    so combining them may be obvious to a skilled person.
+The language model supplies feature-level labels. This module validates those labels,
+removes unsupported reference IDs, and calculates a reproducible evidence-overlap
+indicator. It deliberately does not decide legal novelty or inventive step.
 """
 from __future__ import annotations
 
 VERDICT_WEIGHT = {"disclosed": 1.0, "partial": 0.5, "not_found": 0.0}
-VALID_VERDICTS = set(VERDICT_WEIGHT)
+VALID_VERDICTS = frozenset(VERDICT_WEIGHT)
 
 
 def overlap_index(comparisons: list[dict]) -> float:
-    """Average verdict weight x 100  ->  0 (nothing known) .. 100 (everything known)."""
-    if not comparisons:
+    """Return the mean feature verdict weight as a 0–100 screening indicator."""
+    valid_rows = [row for row in comparisons if isinstance(row, dict)]
+    if not valid_rows:
         return 0.0
-    total = sum(VERDICT_WEIGHT.get(c.get("verdict"), 0.0) for c in comparisons)
-    return round(100.0 * total / len(comparisons), 1)
+    total = sum(VERDICT_WEIGHT.get(str(row.get("verdict", "")).lower(), 0.0)
+                for row in valid_rows)
+    return round(100.0 * total / len(valid_rows), 1)
 
 
 def overlap_band(score: float) -> str:
-    if score < 25:
-        return "LOW overlap - idea looks promising"
-    if score < 55:
-        return "MODERATE overlap - some elements are known"
-    return "HIGH overlap - most elements already known"
+    """Describe matching-evidence volume without implying a patentability outcome."""
+    try:
+        value = float(score)
+    except (TypeError, ValueError):
+        value = 0.0
+    if value < 25:
+        return "LOW reference overlap - limited matching evidence"
+    if value < 55:
+        return "MODERATE reference overlap - some matching evidence"
+    return "HIGH reference overlap - substantial matching evidence"
 
 
-def reference_coverage(comparisons: list[dict]) -> dict[str, list[int]]:
-    """For each reference ID, which feature numbers does it DISCLOSE (verdict == 'disclosed')?"""
-    cover: dict[str, list[int]] = {}
-    for idx, comp in enumerate(comparisons):
-        if comp.get("verdict") != "disclosed":
+def reference_coverage(comparisons: list[dict], evidence_by_id: dict | None = None) -> dict[str, list[int]]:
+    """Map each source document to the feature indices it was judged to disclose.
+
+    Uploaded long documents are split into Chroma chunks. Their chunk IDs differ, but
+    their ``source_document_id`` metadata links them back to one source document.
+    """
+    evidence_by_id = evidence_by_id if isinstance(evidence_by_id, dict) else {}
+    coverage: dict[str, list[int]] = {}
+    for index, comp in enumerate(comparisons):
+        if not isinstance(comp, dict) or comp.get("verdict") != "disclosed":
             continue
-        for ref_id in comp.get("evidence_ids", []):
-            cover.setdefault(ref_id, []).append(idx)
-    return cover
+        ids = comp.get("evidence_ids", [])
+        if not isinstance(ids, (list, tuple, set)):
+            continue
+        for ref_id in ids:
+            if not isinstance(ref_id, str) or not ref_id.strip():
+                continue
+            metadata = evidence_by_id.get(ref_id.strip(), {})
+            source_id = metadata.get("source_document_id") if isinstance(metadata, dict) else None
+            group_id = str(source_id or ref_id).strip()
+            if group_id:
+                coverage.setdefault(group_id, []).append(index)
+    return coverage
 
 
-def risk_flags(comparisons: list[dict]) -> dict:
-    """Return anticipation / obviousness flags from the comparison table."""
-    n = len(comparisons)
-    cover = reference_coverage(comparisons)
-    best_ref, best_count = (None, 0)
-    for ref_id, feats in cover.items():
-        if len(feats) > best_count:
-            best_ref, best_count = ref_id, len(feats)
+def risk_flags(comparisons: list[dict], evidence_by_id: dict | None = None) -> dict:
+    """Summarise single-reference coverage and multi-reference review signals.
 
-    anticipation = n > 0 and best_count == n                      # one reference has everything
-    all_disclosed = n > 0 and all(c.get("verdict") == "disclosed" for c in comparisons)
-    obviousness = all_disclosed and not anticipation              # known, but spread over several refs
-    if anticipation:
-        note = f"Reference {best_ref} appears to disclose ALL features (possible lack of novelty)."
-    elif obviousness:
-        note = "Every feature is known, but across different references (possible lack of inventive step)."
+    A single reference associated with every disclosed feature is a useful flag for
+    human review. Multiple references collectively covering the features is NOT, by
+    itself, proof of obviousness; it is labelled only as a combination-review signal.
+    """
+    rows = [row for row in comparisons if isinstance(row, dict)]
+    n = len(rows)
+    coverage = reference_coverage(rows, evidence_by_id)
+    best_group, best_count = None, 0
+    for group_id, feature_indices in coverage.items():
+        if len(feature_indices) > best_count:
+            best_group, best_count = group_id, len(feature_indices)
+    best_ref = best_group
+    # Prefer a real retrieved chunk ID in the UI/report when a grouped upload ID
+    # is not itself a citeable evidence ID.
+    if best_group and isinstance(evidence_by_id, dict):
+        for evidence_id, metadata in evidence_by_id.items():
+            if isinstance(metadata, dict) and metadata.get("source_document_id") == best_group:
+                best_ref = evidence_id
+                break
+
+    all_disclosed = n > 0 and all(row.get("verdict") == "disclosed" for row in rows)
+    single_reference_coverage = n > 0 and best_count == n
+    combination_review = all_disclosed and not single_reference_coverage
+
+    if single_reference_coverage:
+        note = (f"Reference {best_ref} was cited as disclosing every checked feature. "
+                "Review the original document and claim scope manually.")
+    elif combination_review:
+        note = ("Every checked feature was matched to evidence, but the matches are spread "
+                "across multiple references. This is a signal for further human review, "
+                "not a finding of obviousness.")
     elif best_ref:
-        note = (f"Closest single reference: {best_ref} covers {best_count} of {n} features; "
-                "no single reference covers all of them.")
+        note = (f"Closest single reference: {best_ref} was cited for {best_count} of {n} "
+                "features. No single reference covers every checked feature.")
     else:
-        note = "No reference clearly discloses any feature."
+        note = "No retrieved reference was judged to clearly disclose a checked feature."
+
+    # Keep obviousness_risk as a backwards-compatible alias for older UI integrations.
+    # New code should use combination_review, which has a more accurate meaning.
     return {
-        "anticipation_risk": anticipation,
-        "obviousness_risk": obviousness,
+        "anticipation_risk": single_reference_coverage,
+        "obviousness_risk": combination_review,
+        "combination_review": combination_review,
         "closest_reference": best_ref,
         "closest_coverage": f"{best_count}/{n}",
         "note": note,
     }
 
 
-def validate_comparisons(raw: list, features: list[str], allowed_ids: dict[int, set]) -> list[dict]:
-    """Clean the LLM's verdict list.
-
-    * forces exactly one row per feature, in order
-    * unknown verdicts become 'not_found'
-    * evidence IDs the model invented (not in that feature's retrieved set) are dropped
-    * 'disclosed'/'partial' with no valid evidence is downgraded to 'not_found'
-    """
+def validate_comparisons(raw: list, features: list[str],
+                         allowed_ids: dict[int, set]) -> list[dict]:
+    """Return exactly one safe, evidence-grounded comparison row per feature."""
     rows = []
-    raw = raw if isinstance(raw, list) else []
-    for i, feature in enumerate(features):
-        item = raw[i] if i < len(raw) and isinstance(raw[i], dict) else {}
+    raw_rows = raw if isinstance(raw, list) else []
+    for index, feature in enumerate(features):
+        item = raw_rows[index] if index < len(raw_rows) and isinstance(raw_rows[index], dict) else {}
         verdict = str(item.get("verdict", "not_found")).strip().lower()
         if verdict not in VALID_VERDICTS:
             verdict = "not_found"
-        ids = [e for e in item.get("evidence_ids", []) if e in allowed_ids.get(i, set())]
-        if verdict != "not_found" and not ids:
+
+        supplied_ids = item.get("evidence_ids", [])
+        if isinstance(supplied_ids, str):
+            supplied_ids = [supplied_ids]
+        if not isinstance(supplied_ids, (list, tuple, set)):
+            supplied_ids = []
+        permitted = allowed_ids.get(index, set())
+        if not isinstance(permitted, (set, list, tuple)):
+            permitted = set()
+        permitted = {value for value in permitted if isinstance(value, str)}
+        evidence_ids = []
+        for ref_id in supplied_ids:
+            if isinstance(ref_id, str) and ref_id in permitted and ref_id not in evidence_ids:
+                evidence_ids.append(ref_id)
+
+        if verdict != "not_found" and not evidence_ids:
             verdict = "not_found"
         if verdict == "not_found":
-            ids = []
+            evidence_ids = []
+
         rows.append({
-            "feature": feature,
+            "feature": str(feature),
             "verdict": verdict,
-            "evidence_ids": ids,
-            "reasoning": str(item.get("reasoning", "")).strip(),
+            "evidence_ids": evidence_ids,
+            "reasoning": str(item.get("reasoning", "")).strip()[:1000],
         })
     return rows

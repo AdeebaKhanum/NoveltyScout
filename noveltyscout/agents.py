@@ -122,14 +122,14 @@ class PatentAgents:
         self.helper = build_chain(llm, prompts.HELP_SYSTEM, prompts.HELP_USER, as_json=False)
 
     # ------------------------------------------------------------ safe invocation
-    def _invoke(self, chain, inputs: dict, retries: int = 1, transient_retries: int = 3):
+    def _invoke(self, chain, inputs: dict, retries: int = 1, transient_retries: int = 0):
         """Call a chain.
 
         * malformed JSON from the model   -> retry `retries` times
-        * temporary server trouble (503/429, overload) -> wait 2s, 5s, 10s and retry
+        * temporary server trouble (503/429, overload) -> fail promptly; the UI must not hang
         * anything else (bad key, retired model, no internet) -> raise ModelUnavailable
         """
-        json_failures, waits = 0, [2, 5, 10]
+        json_failures = 0
         transient_used = 0
         last = None
         while True:
@@ -145,11 +145,11 @@ class PatentAgents:
                     raise AgentError(f"The model kept returning malformed output: {last}") from exc
             except Exception as exc:  # noqa: BLE001 - API/network/key/model-name problems
                 if is_transient(exc) and transient_used < transient_retries:
-                    wait = waits[min(transient_used, len(waits) - 1)]
                     transient_used += 1
-                    log.warning("temporary model error (%s); retrying in %ss", exc, wait)
-                    time.sleep(wait)
-                    continue
+                    log.warning("temporary model error; retry disabled to keep response bounded: %s", exc)
+                    raise ModelUnavailable(
+                        "The Gemini service is temporarily busy or timed out. Please try once more in a minute. "
+                        f"Details: {exc}") from exc
                 if is_transient(exc):
                     raise ModelUnavailable(
                         "Google's servers are busy right now (temporary overload). "
@@ -177,7 +177,7 @@ class PatentAgents:
         try:
             data = self._invoke(self.planner, {"idea": mem.idea})
             features = [str(f).strip() for f in data.get("features", []) if str(f).strip()][:6]
-            queries = [str(q).strip() for q in data.get("queries", []) if str(q).strip()][:5]
+            queries = [str(q).strip() for q in data.get("queries", []) if str(q).strip()][:config.MAX_LIVE_QUERIES]
             mem.summary = str(data.get("summary", "")).strip()
             trace.append(f"Planner reasoning: {data.get('reasoning', '')}")
         except ModelUnavailable:
@@ -222,7 +222,7 @@ class PatentAgents:
         return per_feature
 
     def search(self, mem: SessionMemory, trace: list[str], extra_queries: list[str] | None = None) -> None:
-        pending = list(extra_queries or mem.pending_queries)
+        pending = list(extra_queries or mem.pending_queries)[:config.MAX_LIVE_QUERIES]
         for round_no in range(1, config.MAX_SEARCH_ROUNDS + 1):
             new_q = [q for q in pending if q not in mem.queries_done]
             if self.live and new_q:
@@ -255,14 +255,17 @@ class PatentAgents:
     # ------------------------------------------------- 4. novelty comparison agent
     def compare(self, mem: SessionMemory, trace: list[str]) -> None:
         per_feature = self._retrieve(mem)
-        if self.live:                                   # Agentic RAG: weak evidence -> search again
+        if self.live:                                   # bounded Agentic RAG follow-up
+            targeted_count = 0
             for i, hits in enumerate(per_feature):
                 best = hits[0]["similarity"] if hits else 0.0
-                if best < config.LOW_SIMILARITY and mem.features[i] not in mem.queries_done:
+                if (best < config.LOW_SIMILARITY and mem.features[i] not in mem.queries_done
+                        and targeted_count < config.MAX_TARGETED_SEARCHES):
                     trace.append(f"Feature {i + 1} has weak evidence (best similarity {best:.2f}) "
                                  "- running a targeted search")
                     self._live_search([mem.features[i]], trace)
                     mem.queries_done.append(mem.features[i])
+                    targeted_count += 1
             per_feature = self._retrieve(mem)
 
         blocks, allowed = [], {}

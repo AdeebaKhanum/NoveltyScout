@@ -30,10 +30,15 @@ class SessionMemory:
 
     # ---- history helpers
     def add_turn(self, role: str, text: str) -> None:
-        self.history.append((role, text))
+        """Store a bounded, normalised history for routing context."""
+        safe_role = "assistant" if role == "assistant" else "user"
+        self.history.append((safe_role, str(text or "")[:4000]))
+        # The working state above retains the actual analysis; chat history is only
+        # short-term context for the router, so it should not grow without a limit.
+        self.history = self.history[-40:]
 
     def recent_history(self, turns: int = 4) -> str:
-        items = self.history[-turns:]
+        items = self.history[-max(1, int(turns)):]
         if not items:
             return "(no earlier messages)"
         return "\n".join(f"{role}: {text[:200]}" for role, text in items)
@@ -41,7 +46,7 @@ class SessionMemory:
     # ---- state helpers
     def set_idea(self, idea: str) -> None:
         """A NEW idea replaces everything derived from the old one."""
-        self.idea = idea.strip()
+        self.idea = str(idea or "").strip()
         self.summary = ""
         self.features = []
         self.queries_done = []

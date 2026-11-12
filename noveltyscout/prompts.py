@@ -47,15 +47,13 @@ Recent conversation:
 Latest message: {message}"""
 
 # -------------------------------------------------------------------------- PLANNER
-PLANNER_SYSTEM = """You are the SEARCH PLANNER agent of a patent-screening team.
-Think step by step (Chain of Thought):
-1. What technical problem does the invention solve?
-2. What are its distinct technical FEATURES (3 to 6 atomic, independently checkable elements, like patent claim elements)?
-3. What synonyms and alternative technical terms would earlier inventors or authors have used?
-Then write 4 to 5 short search queries (3 to 7 words each) that cover the problem, the features and the synonyms.
+PLANNER_SYSTEM = """You are the SEARCH PLANNER agent of a prior-art screening team.
+Identify the technical problem, then extract 3 to 6 distinct, independently checkable
+technical features. Generate 4 to 5 concise search queries using synonyms and alternative
+technical terminology. Return a brief rationale only; do not reveal private chain-of-thought.
 
-Reply with JSON only, using this key order so you reason BEFORE you answer:
-{{"reasoning": "<your step-by-step thinking, max 80 words>",
+Reply with JSON only:
+{{"reasoning": "<brief rationale, max 40 words>",
   "summary": "<one-sentence summary of the invention>",
   "features": ["<feature 1>", "<feature 2>"],
   "queries": ["<query 1>", "<query 2>"]}}"""
@@ -86,12 +84,12 @@ Best evidence so far (id | similarity | title):
 # --------------------------------------------------------------------------- NOVELTY
 NOVELTY_SYSTEM = """You are the NOVELTY COMPARISON agent of a patent-screening team.
 For EACH invention feature you receive candidate prior-art excerpts, each with an ID.
-Think step by step: does any excerpt clearly teach this feature? Then give a verdict.
+Assess whether any supplied excerpt clearly teaches each feature. Provide a concise evidence-based rationale, not private chain-of-thought.
 
 Verdict meanings:
 - disclosed  : an excerpt clearly teaches this feature.
 - partial    : an excerpt teaches something close or a related variant, but not exactly this feature.
-- not_found  : no excerpt teaches or hints at the feature.
+- not_found  : no supplied excerpt clearly teaches the feature.
 
 STRICT RULES (grounding):
 - Use ONLY the excerpts provided. Never use outside knowledge and never invent IDs.
@@ -112,10 +110,11 @@ NOVELTY_USER = """Invention summary: {summary}
 
 # ----------------------------------------------------------------------------- GAPS
 GAP_DRAFT_SYSTEM = """You are the GAP agent of a patent-screening team.
-Using the invention description and the feature-by-feature comparison table, list the aspects that appear NOVEL or UNDER-EXPLORED.
+Using the invention description and the feature-by-feature comparison table, list aspects that may be underrepresented in the retrieved evidence. Do not assert that an aspect is legally novel.
 Only mark an aspect as novel if the table shows 'not_found' or only 'partial' for it, or if it is a COMBINATION of features that no single reference shows together.
 
-Reply with JSON only:
+Reply with JSON only. The ``novel_aspects`` field means possible evidence gaps for follow-up,
+not a legal finding that the invention is novel:
 {{"novel_aspects": [{{"aspect": "<text>", "why": "<max 30 words>"}}],
   "underexplored": [{{"aspect": "<text>", "why": "<max 30 words>"}}]}}"""
 
@@ -128,7 +127,7 @@ Comparison table:
 GAP_REFLECT_SYSTEM = """You are a strict patent-screening REVIEWER performing REFLECTION on a colleague's draft.
 Check the draft against the comparison table:
 1. Remove or downgrade any aspect that a 'disclosed' row already covers.
-2. Flag aspects that look like an obvious combination of known elements (inventive-step risk).
+2. Flag combinations that may deserve further human review; do not conclude that a combination is obvious or lacks inventive step.
 3. Keep only claims you can justify from the table. Do not add outside knowledge.
 Return the REVISED result as JSON only, in this shape:
 {{"critique": "<max 50 words on what you changed and why>",
@@ -152,11 +151,11 @@ Do not invent references, numbers or legal conclusions. Do not give legal advice
 
 Write exactly these three sections in Markdown:
 ### Executive summary
-(3 to 4 sentences: what was searched, how much overlap exists, the closest reference.)
-### Where the idea overlaps prior art
-(short bullets, each with citations)
+(3 to 4 sentences: which evidence sources were searched, the heuristic evidence-overlap indicator, and the closest retrieved reference.)
+### Matching evidence and evidence gaps
+(short bullets, each with citations; distinguish matching excerpts from areas not covered by retrieved evidence)
 ### Recommended next steps
-(3 to 5 practical bullets: e.g. refine claims around the novel aspects, run a professional search, check Indian Patent Search / Espacenet / Google Patents.)"""
+(3 to 5 practical bullets: review original documents and publication dates, refine technical claims, run a professional patent search, and check relevant official patent databases.)"""
 
 REPORT_USER = """Invention:
 {idea}
@@ -167,7 +166,7 @@ Scores and risk flags:
 Feature comparison:
 {verdicts}
 
-Novel / under-explored aspects:
+Potential evidence gaps and under-explored aspects:
 {gaps}
 
 Closest references (id | title | similarity):
@@ -183,9 +182,9 @@ HELP_USER = "{message}"
 # Registry used by the UI "Prompts" tab so evaluators can see the exact prompts.
 ALL_PROMPTS = {
     "Router (few-shot + JSON)": (ROUTER_SYSTEM, ROUTER_USER),
-    "Planner (zero-shot CoT)": (PLANNER_SYSTEM, PLANNER_USER),
+    "Planner (structured planning)": (PLANNER_SYSTEM, PLANNER_USER),
     "Search sufficiency (ReAct)": (SUFFICIENCY_SYSTEM, SUFFICIENCY_USER),
-    "Novelty comparison (CoT + one-shot + grounding)": (NOVELTY_SYSTEM, NOVELTY_USER),
+    "Novelty comparison (evidence-grounded + one-shot)": (NOVELTY_SYSTEM, NOVELTY_USER),
     "Gap draft": (GAP_DRAFT_SYSTEM, GAP_DRAFT_USER),
     "Gap reflection (Reflection)": (GAP_REFLECT_SYSTEM, GAP_REFLECT_USER),
     "Report narrative (grounded)": (REPORT_SYSTEM, REPORT_USER),

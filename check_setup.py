@@ -32,14 +32,16 @@ def step(name):
 @step("Python version")
 def _py():
     v = sys.version_info
+    version = f"{v.major}.{v.minor}.{v.micro}"
     if v >= (3, 13):
-        raise RuntimeError(f"Python {v.major}.{v.minor} is very new; chromadb may fail. Use 3.11 or 3.12.")
-    return f"{v.major}.{v.minor}.{v.micro}"
+        return f"{version} (newer than the recommended 3.10-3.12 range; verify dependency compatibility)"
+    return version
 
 
 @step("Packages installed")
 def _pkgs():
-    names = ["streamlit", "langchain-core", "langchain-google-genai", "chromadb", "requests", "pypdf"]
+    names = ["streamlit", "pandas", "langchain-core", "langchain-google-genai",
+             "langchain-ollama", "chromadb", "requests", "pypdf", "python-dotenv", "pytest"]
     return ", ".join(f"{n} {md.version(n)}" for n in names)
 
 
@@ -51,7 +53,7 @@ def _key():
     key = os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")
     if not key:
         raise RuntimeError("No GOOGLE_API_KEY. The file must be named exactly .env (not .env.example).")
-    return f"key starts with {key[:4]}..., length {len(key)}"
+    return "API key is present (value hidden)."
 
 
 @step("Config")

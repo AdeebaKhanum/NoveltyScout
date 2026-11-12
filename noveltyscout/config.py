@@ -23,20 +23,22 @@ DEFAULT_PROVIDER = os.getenv("LLM_PROVIDER", "gemini")   # "gemini" | "ollama"
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.8-flash")
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "llama3.1")
 # Tried automatically if the main Gemini model is overloaded (503) or unavailable. Comma separated.
-GEMINI_FALLBACKS = [m.strip() for m in os.getenv("GEMINI_FALLBACKS", "gemini-3.7-flash,gemini-3.6-flash").split(",") if m.strip()]
+GEMINI_FALLBACKS = [m.strip() for m in os.getenv("GEMINI_FALLBACKS", "").split(",") if m.strip()]
 LLM_TEMPERATURE = 0.2          # used for local (Ollama) models; Gemini 3.x manages sampling itself
 
 # ---- Retrieval / vector DB ------------------------------------------
 COLLECTION_NAME = "prior_art"
 TOP_K = 4                      # evidence chunks retrieved per feature
 LOW_SIMILARITY = 0.30          # below this the agent thinks "evidence is weak"
-MAX_SEARCH_ROUNDS = 2          # ReAct-style loop limit (search -> reflect -> search)
-RESULTS_PER_SOURCE = 5         # live results pulled per query per source
+MAX_SEARCH_ROUNDS = 1          # One bounded live-search pass keeps first response predictable
+RESULTS_PER_SOURCE = 3         # keep each live request small and fast
 CHUNK_WORDS = 180              # chunk size for user-uploaded long text
 CHUNK_OVERLAP = 30
+MAX_LIVE_QUERIES = 2            # maximum planner queries per initial search
+MAX_TARGETED_SEARCHES = 1      # maximum extra searches during comparison
 
 # ---- Network ---------------------------------------------------------
-HTTP_TIMEOUT = 15
+HTTP_TIMEOUT = 6               # seconds; prevents a dead source from holding the UI for too long
 OPENALEX_EMAIL = os.getenv("OPENALEX_EMAIL", "")   # optional "polite pool" e-mail
 
 DISCLAIMER = (
